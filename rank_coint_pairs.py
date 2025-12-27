@@ -71,6 +71,12 @@ def run_pair_calibration(args: Tuple[str, str, Dict]) -> Optional[Dict]:
             "y_symbol": y_symbol,
             "x_symbol": x_symbol,
         }
+    if metrics.get("n_windows", 0) < 1000:
+        return {
+            "error": "insufficient_windows",
+            "y_symbol": y_symbol,
+            "x_symbol": x_symbol,
+        }
 
     window = int(config_run.get("rolling_window_days", 30))
     return {
