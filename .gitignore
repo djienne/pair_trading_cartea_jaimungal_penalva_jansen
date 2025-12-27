@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data and Results
+data/
+*.feather
+*.csv
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+
+# Project specific
+.gemini/
+binance_doc.txt
+prompt.txt
+debug_band_calc.py

@@ -1,0 +1,30 @@
+{
+  "pairs": [
+    {
+      "name": "BNB-SOL",
+      "y_symbol": "BNBUSDT",
+      "x_symbol": "SOLUSDT"
+    }
+  ],
+  "candle_interval": "1d",
+  "rolling_window_days": 300,
+  "data_dir": "data",
+  "feather_dir": "data/feather",
+  "intermediate_dir": "data/intermediate",
+  "output_dir": "data/output",
+  "start_equity": 1000,
+  "adf_alpha": 0.05,
+  "ou_dt_days": 0.003968253968253968,
+  "transaction_cost": 0.001,
+  "fee_rate": 0.001,
+  "ou_min_u": 0.000001,
+  "ou_min_kappa": 0.0001,
+  "discount_rate": 0.05,
+  "ranking_threads": 4,
+  "bands_std_mult": 3.0,
+  "flip_signals": true,
+  "long_only": false,
+  "max_klines_per_request": 1500,
+  "log_adf_each_window": true,
+  "binance_base_url": "https://fapi.binance.com"
+}
