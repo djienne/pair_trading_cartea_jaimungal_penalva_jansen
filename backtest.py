@@ -130,15 +130,21 @@ def backtest_pair(pair: Dict, config: Dict) -> pd.DataFrame:
     return df
 
 
-def plot_equity(results: pd.DataFrame, pair_name: str) -> None:
+def plot_equity(results: pd.DataFrame, pair_name: str, save_path: str = None) -> None:
     plt.figure(figsize=(12, 6))
-    plt.plot(results.index, results["equity"], label="Equity")
+    plt.plot(results.index, results["equity"], label="Equity", linewidth=1.5)
     plt.title(f"Pair Trading Equity ({pair_name})")
     plt.xlabel("Date")
     plt.ylabel("Equity (USD)")
     plt.legend()
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.show()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+        print(f"Saved equity plot to {save_path}")
+    
+    plt.close()
 
 
 def main(config_path: str = "config.json") -> None:
@@ -146,13 +152,33 @@ def main(config_path: str = "config.json") -> None:
     pairs = config.get("pairs", [])
     if not pairs:
         raise ValueError("No pairs configured in config.json")
+        
+    # Prepare plots directory
+    data_dir = config.get("data_dir", "data")
+    plots_dir = os.path.join(data_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+    
+    interval = config.get("candle_interval", "1d")
+    window = int(config.get("rolling_window_days", 30))
 
     for pair in pairs:
         pair_name = pair.get("name") or pair_id(pair)
         print(f"Running backtest for {pair_name}...")
         results = backtest_pair(pair, config)
         print(f"Final equity for {pair_name}: {results['equity'].iloc[-1]:.2f} USD")
-        plot_equity(results, pair_name)
+        
+        # Construct meaningful filename
+        start_date = results.index[0].strftime('%Y%m%d')
+        end_date = results.index[-1].strftime('%Y%m%d')
+        
+        # Format: equity_{PAIR}_{INTERVAL}_w{WINDOW}_{START}-{END}.png
+        filename = f"equity_{pair_name}_{interval}_w{window}_{start_date}-{end_date}.png"
+        
+        # Sanitize filename (replace forbidden characters)
+        filename = filename.replace(os.path.sep, "_").replace(":", "")
+        
+        save_path = os.path.join(plots_dir, filename)
+        plot_equity(results, pair_name, save_path)
 
 
 if __name__ == "__main__":
