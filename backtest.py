@@ -130,7 +130,12 @@ def backtest_pair(pair: Dict, config: Dict) -> pd.DataFrame:
     return df
 
 
-def plot_equity(results: pd.DataFrame, pair_name: str, save_path: str = None) -> None:
+def plot_equity(
+    results: pd.DataFrame,
+    pair_name: str,
+    save_path: str = None,
+    show_plot: bool = True,
+) -> None:
     plt.figure(figsize=(12, 6))
     plt.plot(results.index, results["equity"], label="Equity", linewidth=1.5)
     plt.title(f"Pair Trading Equity ({pair_name})")
@@ -143,7 +148,10 @@ def plot_equity(results: pd.DataFrame, pair_name: str, save_path: str = None) ->
     if save_path:
         plt.savefig(save_path, dpi=150)
         print(f"Saved equity plot to {save_path}")
-    
+
+    if show_plot:
+        plt.show()
+
     plt.close()
 
 
@@ -178,7 +186,8 @@ def main(config_path: str = "config.json") -> None:
         filename = filename.replace(os.path.sep, "_").replace(":", "")
         
         save_path = os.path.join(plots_dir, filename)
-        plot_equity(results, pair_name, save_path)
+        show_plot = bool(config.get("show_plots", True))
+        plot_equity(results, pair_name, save_path, show_plot=show_plot)
 
 
 if __name__ == "__main__":
