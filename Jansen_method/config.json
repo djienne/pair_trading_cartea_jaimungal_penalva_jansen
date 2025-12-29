@@ -1,0 +1,15 @@
+{
+  "data_dir": "../data/feather",
+  "output_dir": "output",
+  "interval": "1d",
+  "quote": "USDT",
+  "symbol_y": "BNB",
+  "symbol_x": "SOL",
+  "start_equity": 1000.0,
+  "entry_z": 2.0,
+  "threshold_grid": [1.0, 1.5, 2.0, 2.5, 3.0],
+  "min_history_days": 1000,
+  "fee_rate": 0.001,
+  "lookback_days": 730,
+  "show_plot": true
+}
