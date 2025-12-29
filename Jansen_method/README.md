@@ -11,6 +11,9 @@ This project implements a pairs trading strategy inspired by the "Pairs trading 
 - **Optimization Tools**: Scripts to sweep z-score thresholds and find the best-performing pairs.
 - **Caching**: `pair_sweep.py` uses a signature-based caching mechanism to speed up repeated runs.
 
+## Example Output
+
+<img src="output/equity_BTC_XRP_z1.0.png" width="700" alt="Equity curve for BTC/XRP (z=1.0)" />
 ## Scripts
 
 ### 1. `jansen_backtest.py`
