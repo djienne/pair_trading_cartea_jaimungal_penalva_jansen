@@ -26,7 +26,7 @@ Sweeps a grid of z-score thresholds for the pair defined in `config.json`.
 ```powershell
 python zscore_sweep.py --thresholds "1.0,1.5,2.0,2.5,3.0"
 ```
-Useful for finding the optimal entry threshold for a specific pair. It ranks results by `avg_log_return`.
+Useful for finding the optimal entry threshold for a specific pair. It filters results based on `min_trades` and ranks them by `sharpe` ratio.
 
 ### 3. `pair_sweep.py`
 Ranks all possible pairs from the available data based on their performance.
@@ -36,7 +36,7 @@ python pair_sweep.py
 - It filters symbols based on `min_history_days`.
 - It tests each pair against the `threshold_grid` defined in `config.json`.
 - Results are cached in the `cache/` folder using a SHA-256 signature of the data and code.
-- It outputs a ranked table based on `avg_log_return` and generates an equity plot for the best-performing pair in `output/`.
+- It outputs a ranked table based on `sharpe` ratio (requiring at least `min_trades`) and generates an equity plot for the best-performing pair in `output/`.
 
 ## Configuration (`config.json`)
 
@@ -50,6 +50,7 @@ python pair_sweep.py
 - `entry_z`: Z-score threshold for entering a trade.
 - `threshold_grid`: List of z-score thresholds to test in sweep scripts.
 - `min_history_days`: Minimum data points required for a symbol to be included in `pair_sweep.py`.
+- `min_trades`: Minimum number of trades required for a backtest result to be considered valid in sweep scripts.
 - `fee_rate`: Transaction fee rate (e.g., `0.001` for 0.1%).
 - `lookback_days`: Rolling lookback (in days) used before each quarterly test window.
 - `trade_window_months`: Months traded after each quarterly test end (default 6).
@@ -61,7 +62,8 @@ python pair_sweep.py
 Ensure you have the following dependencies installed:
 
 ```powershell
-pip install pandas pykalman matplotlib pyarrow
+pip install pandas numpy pykalman matplotlib pyarrow
 ```
 
 The data files should be in Feather format with a `close` price column and an `open_time_dt` datetime column.
+Files should be named following the pattern `{symbol}{quote}_{interval}.feather` (e.g., `BNBUSDT_1d.feather`).
