@@ -7,6 +7,7 @@ This project implements a pairs trading strategy inspired by the "Pairs trading 
 - **Kalman Filter Smoothing**: Reduces noise in individual price series.
 - **Dynamic Hedge Ratio**: Uses a Kalman Filter to estimate the cointegration relationship between two assets in real-time.
 - **Mean Reversion Strategy**: Trades the z-score of the spread, entering at `entry_z` and exiting when the z-score changes sign (mean reversion).
+- **Rolling Windows**: Recomputes hedge ratio/half-life/z-score quarterly, trades a 6-month window, and only opens trades in the first 3 months.
 - **Optimization Tools**: Scripts to sweep z-score thresholds and find the best-performing pairs.
 - **Caching**: `pair_sweep.py` uses a signature-based caching mechanism to speed up repeated runs.
 
@@ -18,6 +19,7 @@ The core backtest engine for a single pair.
 python jansen_backtest.py
 ```
 It reads `symbol_x` and `symbol_y` from `config.json`, runs the backtest, and saves the results/plots to the `output/` directory.
+The backtest recalibrates quarterly using a rolling lookback window.
 
 ### 2. `zscore_sweep.py`
 Sweeps a grid of z-score thresholds for the pair defined in `config.json`.
@@ -49,7 +51,9 @@ python pair_sweep.py
 - `threshold_grid`: List of z-score thresholds to test in sweep scripts.
 - `min_history_days`: Minimum data points required for a symbol to be included in `pair_sweep.py`.
 - `fee_rate`: Transaction fee rate (e.g., `0.001` for 0.1%).
-- `lookback_days`: Lookback window used for estimating half-life and rolling spread statistics.
+- `lookback_days`: Rolling lookback (in days) used before each quarterly test window.
+- `trade_window_months`: Months traded after each quarterly test end (default 6).
+- `entry_window_months`: Months within the trading window where entries are allowed (default 3).
 - `show_plot`: Boolean to toggle the display of the equity curve window.
 
 ## Installation
