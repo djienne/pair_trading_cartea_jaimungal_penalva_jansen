@@ -185,14 +185,58 @@ def save_pair_data(
 
 
 def valid_ou_params(params: np.ndarray, min_sigma: float, min_kappa: float) -> bool:
+    # Canonical OU params contract: [kappa (mean-reversion SPEED), mu (long-run LEVEL), sigma].
+    # (Beware: band_calc.CointOpti uses the name `theta` for the LEVEL, not the speed.)
     if params is None or len(params) < 3:
         return False
-    theta, mu, sigma = params
-    if not np.isfinite(theta) or not np.isfinite(mu) or not np.isfinite(sigma):
+    kappa_speed, mu, sigma = params
+    if not np.isfinite(kappa_speed) or not np.isfinite(mu) or not np.isfinite(sigma):
         return False
-    if theta <= min_kappa or sigma <= min_sigma:
+    if kappa_speed <= min_kappa or sigma <= min_sigma:
         return False
     return True
+
+
+# =============================================================================
+# Performance metric helpers (shared across rankers)
+# =============================================================================
+def periods_per_year(interval: str, override: Optional[int] = None) -> int:
+    """
+    Approximate number of bars per calendar year for a Binance interval (e.g. '1d', '4h', '1h').
+
+    Crypto trades ~365 days/year (NOT 252 equity-trading days), so daily bars -> 365. Returns
+    `override` verbatim when provided. Falls back to 365 for unrecognized strings.
+    """
+    if override:
+        return int(override)
+    text = str(interval).strip().lower()
+    try:
+        if text.endswith("d"):
+            return max(1, 365 // max(int(text[:-1] or 1), 1))
+        if text.endswith("h"):
+            return max(1, int(365 * 24 / max(int(text[:-1] or 1), 1)))
+        if text.endswith("m"):
+            return max(1, int(365 * 24 * 60 / max(int(text[:-1] or 1), 1)))
+        if text.endswith("w"):
+            return max(1, int(52 / max(int(text[:-1] or 1), 1)))
+    except ValueError:
+        pass
+    return 365  # sensible default for daily crypto
+
+
+def annualized_sharpe(returns, periods: Optional[int]) -> float:
+    """
+    Annualized Sharpe ratio from a per-bar return series. Guards against empty input and
+    zero/non-finite variance (returns 0.0 in those cases).
+    """
+    ret = pd.Series(returns).dropna()
+    if ret.empty:
+        return 0.0
+    std = float(ret.std())
+    if std == 0.0 or not np.isfinite(std):
+        return 0.0
+    scale = float(np.sqrt(periods)) if periods else 1.0
+    return float(ret.mean() / std * scale)
 
 
 def prepare_pair_data(

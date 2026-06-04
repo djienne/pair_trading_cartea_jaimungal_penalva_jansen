@@ -18,6 +18,8 @@ class CointOpti:
         rho: float,
         min_u: float = 1e-6,
     ):
+        # NB: here `theta` is the OU long-run LEVEL (mean) and `kappa` is the mean-reversion SPEED.
+        # This is the opposite naming convention to ou_calibrate.py, where `theta` means the speed.
         self.c = c
         self.theta = theta
         self.kappa = kappa
@@ -97,7 +99,7 @@ class CointOpti:
             raise ValueError("Root solve failed for long-short")
         return solution.x[0]
 
-    def get_opti_params(self, analytic=True, init_low=0.5, init_high=1.5):
+    def get_opti_params(self, analytic=True, init_low=0.5):
         epsilon_star = self.solve_optimal_long_short(init_low, analytic)
         return epsilon_star, -epsilon_star + 2 * self.theta
 
@@ -122,6 +124,9 @@ def compute_bands(
     shift = max(0.0, -float(np.min(epsilon)) + min_u)
     mu_shift = mu + shift
 
+    # transaction_cost is in ABSOLUTE spread/residual (price) units: it is subtracted directly from
+    # the band level below (c = mu_shift - trans_cost). This is a DIFFERENT unit from backtest.py's
+    # fee_rate, which is a fraction of traded notional.
     trans_cost = float(config.get("transaction_cost", 0.0))
     if trans_cost <= 0:
         trans_cost = 0.001
@@ -137,11 +142,9 @@ def compute_bands(
 
     try:
         init_low = max(min_u, mu_shift - sigma)
-        init_high = mu_shift + sigma
         lower_shift, _ = coint.get_opti_params(
             analytic=True,
             init_low=init_low,
-            init_high=init_high,
         )
         if not np.isfinite(lower_shift) or lower_shift <= min_u:
             raise ValueError("Invalid long-short bands")

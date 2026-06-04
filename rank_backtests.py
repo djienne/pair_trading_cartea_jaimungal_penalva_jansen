@@ -6,42 +6,16 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from utils import periods_per_year, annualized_sharpe
+
 
 BACKTEST_RE = re.compile(r"^backtest_(.+)_(\w+)_w(\d+)\.feather$")
-
-
-def parse_interval_to_periods(interval: str) -> Optional[int]:
-    text = interval.strip().lower()
-    if text.endswith("d"):
-        try:
-            days = int(text[:-1])
-        except ValueError:
-            return None
-        return 365 // max(days, 1)
-    if text.endswith("h"):
-        try:
-            hours = int(text[:-1])
-        except ValueError:
-            return None
-        return int(365 * 24 / max(hours, 1))
-    return None
 
 
 def max_drawdown(equity: pd.Series) -> float:
     running_max = equity.cummax()
     drawdown = equity / running_max - 1.0
     return float(drawdown.min())
-
-
-def sharpe_ratio(returns: pd.Series, periods_per_year: Optional[int]) -> float:
-    ret = returns.dropna()
-    if ret.empty:
-        return 0.0
-    std = float(ret.std())
-    if std == 0.0:
-        return 0.0
-    scale = np.sqrt(periods_per_year) if periods_per_year else 1.0
-    return float(ret.mean() / std * scale)
 
 
 def extract_pair_parts(pair_id: str) -> Tuple[str, str, str]:
@@ -79,8 +53,8 @@ def summarize_backtest(path: str) -> Optional[Dict[str, object]]:
     else:
         returns = equity.pct_change().fillna(0.0)
 
-    periods = parse_interval_to_periods(interval)
-    sharpe = sharpe_ratio(returns, periods)
+    periods = periods_per_year(interval)
+    sharpe = annualized_sharpe(returns, periods)
     mdd = max_drawdown(equity) * 100.0
     trades = int(df["turnover"].gt(0).sum()) if "turnover" in df.columns else 0
 

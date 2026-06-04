@@ -8,7 +8,10 @@ import numpy as np
 import pandas as pd
 import requests
 
-from bayesian_coint import calibrate_pair
+# This ranker scores pairs by ADF p-values, which only the OLS calibrator produces
+# (the Bayesian path fills adf_pvalue with NaN). Always use OLS here regardless of
+# config["cointegration_method"].
+from coint_calibrate import calibrate_pair
 from utils import load_config, get_dirs, get_symbol_path
 
 
@@ -146,7 +149,7 @@ def rank_pairs(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Rank USDT perpetual pairs by cointegration ADF p-values."
+        description="Rank USDT perpetual pairs by OLS rolling-cointegration ADF p-values."
     )
     parser.add_argument("--config", default="config.json")
     parser.add_argument(

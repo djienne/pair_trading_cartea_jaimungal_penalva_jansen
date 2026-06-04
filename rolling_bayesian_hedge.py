@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import math
 import multiprocessing as mp
 import warnings
-import sys
-import os
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Literal, List
-from functools import partial
+from typing import Optional, Tuple, Literal
 
 import numpy as np
 import pandas as pd
@@ -22,134 +18,7 @@ logging.getLogger("pytensor").setLevel(logging.ERROR)
 
 
 # ============================================================
-# 0) OU calibration
-# ============================================================
-
-@dataclass
-class OUParams:
-    kappa: float
-    theta: float
-    sigma: float
-    dt: float
-
-def fit_ou_discrete(eps: pd.Series, dt: float = 1.0) -> OUParams:
-    """
-    Fit OU via AR(1):
-        eps_{t+1} = a + b*eps_t + e_t
-    b = exp(-kappa*dt), a = theta*(1-b)
-    """
-    x = eps.values[:-1].astype(float)
-    y = eps.values[1:].astype(float)
-    X = np.column_stack([np.ones_like(x), x])
-    a_hat, b_hat = np.linalg.lstsq(X, y, rcond=None)[0]
-    b_hat = float(np.clip(b_hat, 1e-8, 1 - 1e-8))
-    kappa = -math.log(b_hat) / dt
-    theta = float(a_hat) / (1.0 - b_hat)
-    resid = y - (a_hat + b_hat * x)
-    s2 = float(np.var(resid, ddof=2))
-    sigma = math.sqrt(s2 * (2.0 * kappa) / (1.0 - math.exp(-2.0 * kappa * dt)))
-    return OUParams(kappa=kappa, theta=theta, sigma=sigma, dt=dt)
-
-
-# ============================================================
-# 1) Optional: "optimal trigger" computation
-# ============================================================
-
-def _try_import_scipy():
-    try:
-        from scipy.integrate import quad
-        from scipy.optimize import brentq
-        return quad, brentq
-    except Exception:
-        return None, None
-
-def _mpmath_fallback():
-    try:
-        import mpmath as mp
-        return mp
-    except Exception:
-        return None
-
-def _F_integrals(eps: float, kappa: float, theta: float, sigma: float, rho: float, sign: int) -> Tuple[float, float]:
-    quad, _ = _try_import_scipy()
-    if quad is not None:
-        q = math.sqrt(2.0 * kappa / (sigma * sigma))
-        p = rho / kappa
-        lin = (-sign) * q * (theta - eps)
-
-        def integrand_F(u: float) -> float:
-            return (u ** (p - 1.0)) * math.exp(lin * u - 0.5 * u * u)
-
-        def integrand_d(u: float) -> float:
-            return (u ** p) * math.exp(lin * u - 0.5 * u * u)
-
-        F, _ = quad(integrand_F, 0.0, np.inf, limit=200)
-        I, _ = quad(integrand_d, 0.0, np.inf, limit=200)
-        Fp = (+q * I) if sign == +1 else (-q * I)
-        return float(F), float(Fp)
-
-    mp = _mpmath_fallback()
-    if mp is None:
-        raise ImportError("Need scipy or mpmath for optimal-trigger integrals.")
-    q = mp.sqrt(2.0 * kappa / (sigma * sigma))
-    p = rho / kappa
-    lin = (-sign) * q * (theta - eps)
-    F = mp.quad(lambda u: (u ** (p - 1.0)) * mp.e ** (lin * u - 0.5 * u * u), [0, mp.inf])
-    I = mp.quad(lambda u: (u ** p) * mp.e ** (lin * u - 0.5 * u * u), [0, mp.inf])
-    Fp = (+q * I) if sign == +1 else (-q * I)
-    return float(F), float(Fp)
-
-def _find_root_bracket(func, grid: np.ndarray) -> Optional[Tuple[float, float]]:
-    vals = [func(x) for x in grid]
-    for i in range(len(grid) - 1):
-        if np.isnan(vals[i]) or np.isnan(vals[i + 1]):
-            continue
-        if vals[i] * vals[i + 1] < 0:
-            return float(grid[i]), float(grid[i + 1])
-    return None
-
-def compute_optimal_exit_triggers(
-    ou: OUParams,
-    rho: float = 0.01,
-    c: float = 0.0,
-    search_width: float = 8.0,
-    grid_points: int = 200,
-) -> Dict[str, float]:
-    kappa, theta, sigma = ou.kappa, ou.theta, ou.sigma
-    ou_std = sigma / math.sqrt(2.0 * kappa) if kappa > 0 else float(np.std([0, 1]))
-
-    def f_long_exit(eps: float) -> float:
-        F, Fp = _F_integrals(eps, kappa, theta, sigma, rho, sign=+1)
-        return (eps - c) * Fp - F
-
-    def f_short_exit(eps: float) -> float:
-        F, Fp = _F_integrals(eps, kappa, theta, sigma, rho, sign=-1)
-        return (eps + c) * Fp - F
-
-    lo, hi = theta - search_width * ou_std, theta + search_width * ou_std
-    grid = np.linspace(lo, hi, grid_points)
-
-    _, brentq = _try_import_scipy()
-    if brentq is None:
-        eps_exit_long = float(grid[np.argmin([abs(f_long_exit(x)) for x in grid])])
-        eps_exit_short = float(grid[np.argmin([abs(f_short_exit(x)) for x in grid])])
-    else:
-        br_long = _find_root_bracket(f_long_exit, grid)
-        br_short = _find_root_bracket(f_short_exit, grid)
-        eps_exit_long = float(brentq(f_long_exit, *br_long)) if br_long else float(theta + 2 * ou_std)
-        eps_exit_short = float(brentq(f_short_exit, *br_short)) if br_short else float(theta - 2 * ou_std)
-
-    return {
-        "eps_exit_long": eps_exit_long,
-        "eps_exit_short": eps_exit_short,
-        "eps_entry_long": eps_exit_short,
-        "eps_entry_short": eps_exit_long,
-        "ou_std": float(ou_std),
-    }
-
-
-# ============================================================
-# 2) Rolling Bayesian Random-Walk regression (daily update)
+# Rolling Bayesian Random-Walk regression (daily update)
 # ============================================================
 
 def _import_pymc():
@@ -256,13 +125,77 @@ def _fit_rw_window_pymc(
 
     return alpha_last, beta_last, sig_hat
 
+# ------------------------------------------------------------
+# Causal (per-window) standardization helpers
+# ------------------------------------------------------------
+# The model priors are fixed in standardized space, so the *scale* used to standardize must not
+# leak information from outside the current window. We therefore standardize each window with its
+# OWN mean/std (not the full series), fit, then de-standardize the coefficients back to raw units.
+
+def _standardize_window(y_win: np.ndarray, x_win: np.ndarray) -> Tuple[float, float, float, float]:
+    ym = float(np.mean(y_win))
+    ys = float(np.std(y_win, ddof=1) + 1e-12)
+    xm = float(np.mean(x_win))
+    xs = float(np.std(x_win, ddof=1) + 1e-12)
+    return ym, ys, xm, xs
+
+
+def _to_orig_coeffs(alpha_s: float, beta_s: float, ym: float, ys: float, xm: float, xs: float) -> Tuple[float, float]:
+    beta_orig = (ys / xs) * beta_s
+    alpha_orig = ym + ys * alpha_s - beta_orig * xm
+    return alpha_orig, beta_orig
+
+
+def _to_std_coeffs(alpha_orig: float, beta_orig: float, ym: float, ys: float, xm: float, xs: float) -> Tuple[float, float]:
+    # Inverse of _to_orig_coeffs: express raw-unit coefficients in this window's standardized space.
+    beta_s = beta_orig * xs / ys
+    alpha_s = (alpha_orig + beta_orig * xm - ym) / ys
+    return alpha_s, beta_s
+
+
+def _fit_window_destd(
+    y_win: np.ndarray,
+    x_win: np.ndarray,
+    inference: "Inference" = "advi",
+    advi_steps: int = 1500,
+    draws: int = 300,
+    tune: int = 300,
+    target_accept: float = 0.9,
+    warm_start: bool = False,
+    prev_alpha_orig: Optional[float] = None,
+    prev_beta_orig: Optional[float] = None,
+    random_seed: int = 7,
+    use_ols_init: bool = True,
+) -> Tuple[float, float, float]:
+    """Standardize one RAW window causally, fit, and return de-standardized (alpha, beta, sigma)."""
+    ym, ys, xm, xs = _standardize_window(y_win, x_win)
+    y_s = (y_win - ym) / ys
+    x_s = (x_win - xm) / xs
+
+    if warm_start and prev_alpha_orig is not None and prev_beta_orig is not None:
+        prev_a_s, prev_b_s = _to_std_coeffs(prev_alpha_orig, prev_beta_orig, ym, ys, xm, xs)
+    else:
+        prev_a_s, prev_b_s = None, None
+
+    a_s, b_s, sig_s = _fit_rw_window_pymc(
+        y_s, x_s, inference=inference, advi_steps=advi_steps, draws=draws, tune=tune,
+        target_accept=target_accept, warm_start=warm_start, prev_alpha0=prev_a_s,
+        prev_beta0=prev_b_s, random_seed=random_seed, use_ols_init=use_ols_init,
+    )
+    alpha_orig, beta_orig = _to_orig_coeffs(a_s, b_s, ym, ys, xm, xs)
+    sigma_orig = ys * sig_s  # de-standardize observation noise back to raw y units
+    return alpha_orig, beta_orig, sigma_orig
+
+
 def _fit_single_window_job(args) -> Tuple[int, float, float, float]:
+    # Receives a RAW (unstandardized) window; standardization happens causally inside the fit.
+    # warm_start is always False here so parallel results are independent of process scheduling.
     (i, y_win, x_win, inference, advi_steps, draws, tune, target_accept, random_seed, use_ols_init) = args
     try:
-        a, b, s = _fit_rw_window_pymc(
+        a, b, s = _fit_window_destd(
             y_win, x_win, inference=inference, advi_steps=advi_steps,
-            draws=draws, tune=tune, target_accept=target_accept, warm_start=False, random_seed=random_seed,
-            use_ols_init=use_ols_init
+            draws=draws, tune=tune, target_accept=target_accept, warm_start=False,
+            random_seed=random_seed, use_ols_init=use_ols_init,
         )
         return i, a, b, s
     except Exception:
@@ -295,24 +228,30 @@ def rolling_bayesian_rw_hedge_ratio(
     if T <= window + 2:
         raise ValueError("Not enough data.")
 
-    y_mean, y_std = float(y.mean()), float(y.std(ddof=1) + 1e-12)
-    x_mean, x_std = float(x.mean()), float(x.std(ddof=1) + 1e-12)
-    y_s, x_s = (y - y_mean) / y_std, (x - x_mean) / x_std
+    # NOTE: no full-series standardization here. Each window is standardized causally inside
+    # _fit_window_destd using only that window's own statistics (see helpers above).
 
     alpha_out = pd.Series(index=idx, dtype=float, name="alpha_hat")
     beta_out  = pd.Series(index=idx, dtype=float, name="beta_hat")
     sig_out   = pd.Series(index=idx, dtype=float, name="sigma_obs_hat")
 
     indices = [i for i in range(window, T) if (i - window) % update_every == 0]
-    
+
     try:
         from tqdm import tqdm
         has_tqdm = True
     except ImportError:
         has_tqdm = False
 
-    if n_jobs > 1:
-        tasks = [(i, y_s[i-window:i], x_s[i-window:i], inference, advi_steps, draws, tune, target_accept, random_seed, use_ols_init) for i in indices]
+    # Warm start chains each window's prior to the previous window's posterior, which is inherently
+    # sequential. Parallelism is only safe (and deterministic) when warm_start is off; otherwise
+    # results would depend on process scheduling. So disable parallelism when warm_start is on.
+    use_parallel = (n_jobs > 1) and (not warm_start)
+    if (n_jobs > 1) and warm_start and show_progress:
+        print("[Bayesian] warm_start=True forces sequential fitting (n_jobs ignored) for determinism.")
+
+    if use_parallel:
+        tasks = [(i, y[i-window:i], x[i-window:i], inference, advi_steps, draws, tune, target_accept, random_seed, use_ols_init) for i in indices]
         results = []
         with mp.Pool(processes=n_jobs) as pool:
             if has_tqdm and show_progress:
@@ -321,103 +260,25 @@ def rolling_bayesian_rw_hedge_ratio(
                     results.append(res)
             else:
                 results = pool.map(_fit_single_window_job, tasks)
-        
-        for i, a_last, b_last, sig_hat in results:
-            if not np.isnan(a_last):
-                beta_orig = (y_std / x_std) * b_last
-                alpha_orig = y_mean + y_std * a_last - beta_orig * x_mean
+
+        for i, alpha_orig, beta_orig, sig_hat in results:
+            if not np.isnan(alpha_orig):
                 alpha_out.iloc[i], beta_out.iloc[i], sig_out.iloc[i] = alpha_orig, beta_orig, sig_hat
     else:
         prev_a, prev_b = None, None
         it = tqdm(indices, desc="Sequential Fit", leave=False) if has_tqdm and show_progress else indices
         for i in it:
-            a_last, b_last, sig_hat = _fit_rw_window_pymc(
-                y_s[i-window:i], x_s[i-window:i], inference=inference, advi_steps=advi_steps,
-                draws=draws, tune=tune, target_accept=target_accept, warm_start=warm_start, prev_alpha0=prev_a, prev_beta0=prev_b,
-                random_seed=random_seed, use_ols_init=use_ols_init
-            )
-            prev_a, prev_b = a_last, b_last
-            beta_orig = (y_std / x_std) * b_last
-            alpha_orig = y_mean + y_std * a_last - beta_orig * x_mean
-            alpha_out.iloc[i], beta_out.iloc[i], sig_out.iloc[i] = alpha_orig, beta_orig, sig_hat
+            try:
+                alpha_orig, beta_orig, sig_hat = _fit_window_destd(
+                    y[i-window:i], x[i-window:i], inference=inference, advi_steps=advi_steps,
+                    draws=draws, tune=tune, target_accept=target_accept, warm_start=warm_start,
+                    prev_alpha_orig=prev_a, prev_beta_orig=prev_b,
+                    random_seed=random_seed, use_ols_init=use_ols_init,
+                )
+            except Exception:
+                alpha_orig, beta_orig, sig_hat = np.nan, np.nan, np.nan
+            if not np.isnan(alpha_orig):
+                prev_a, prev_b = alpha_orig, beta_orig
+                alpha_out.iloc[i], beta_out.iloc[i], sig_out.iloc[i] = alpha_orig, beta_orig, sig_hat
 
     return RollingBayesHedge(alpha_hat=alpha_out.ffill().dropna(), beta_hat=beta_out.ffill().dropna(), sigma_obs_hat=sig_out.ffill().dropna())
-
-
-# ============================================================
-# 3) Backtest
-# ============================================================
-
-@dataclass
-class BacktestResult:
-    ledger: pd.DataFrame
-    metrics: Dict[str, float]
-
-def backtest_dynamic_pairs_rolling(
-    s1: pd.Series, s2: pd.Series, alpha_hat: pd.Series, beta_hat: pd.Series,
-    signal_mode: Literal["residual", "spread"] = "residual", ou_window: int = 252,
-    method: Literal["bands", "optimal"] = "bands", outer_k: float = 1.0,
-    inner_k: float = 0.1, rho: float = 0.01, c: float = 0.0,
-    rehedge_daily: bool = False, force_flat_end: bool = True,
-) -> BacktestResult:
-    s1, s2 = s1.dropna().astype(float), s2.dropna().astype(float)
-    idx = s1.index.intersection(s2.index).intersection(alpha_hat.index).intersection(beta_hat.index)
-    s1, s2 = s1.loc[idx], s2.loc[idx]
-    a, b = alpha_hat.loc[idx], beta_hat.loc[idx]
-    sig = (s1 - (a + b * s2)) if signal_mode == "residual" else (s1 - b * s2)
-
-    pos, m1, m2, cash, rows = 0, 0.0, 0.0, 0.0, []
-    for t_i in range(len(idx)):
-        t, y, x, z, beta_t = idx[t_i], float(s1.iloc[t_i]), float(s2.iloc[t_i]), float(sig.iloc[t_i]), float(b.iloc[t_i])
-        pos_prev, m1_prev, m2_prev = pos, m1, m2
-
-        if rehedge_daily and pos != 0:
-            target_m2 = -beta_t * m1
-            cash -= (target_m2 - m2) * x + abs(target_m2 - m2) * c
-            m2 = target_m2
-
-        if t_i < ou_window:
-            entry_long = entry_short = exit_long = exit_short = np.nan
-        else:
-            hist = sig.iloc[t_i-ou_window:t_i]
-            if method == "bands":
-                mu, sd = float(hist.mean()), float(hist.std(ddof=1) + 1e-12)
-                entry_long, entry_short = mu - outer_k * sd, mu + outer_k * sd
-                exit_long, exit_short = mu - inner_k * sd, mu + inner_k * sd
-            else:
-                ou = fit_ou_discrete(hist)
-                trig = compute_optimal_exit_triggers(ou, rho, c)
-                entry_long, entry_short, exit_long, exit_short = trig["eps_entry_long"], trig["eps_entry_short"], trig["eps_exit_long"], trig["eps_exit_short"]
-
-        if not np.isnan(entry_long):
-            if pos == 0:
-                if z <= entry_long: pos, m1, m2 = 1, 1.0, -beta_t
-                elif z >= entry_short: pos, m1, m2 = -1, -1.0, beta_t
-                if pos != 0: cash -= (m1 * y + m2 * x) + (abs(m1) + abs(m2)) * c
-            elif (pos == 1 and z >= exit_long) or (pos == -1 and z <= exit_short):
-                cash += (m1 * y + m2 * x) - (abs(m1) + abs(m2)) * c
-                pos, m1, m2 = 0, 0.0, 0.0
-
-        rows.append((t, z, beta_t, pos_prev, pos, m1_prev, m2_prev, m1, m2, cash, cash + m1 * y + m2 * x, entry_long, entry_short, exit_long, exit_short))
-
-    ledger = pd.DataFrame(rows, columns=["time", "signal", "beta_used", "pos_prev", "pos", "m1_prev", "m2_prev", "m1", "m2", "cash", "book_value", "entry_long", "entry_short", "exit_long", "exit_short"]).set_index("time")
-    if force_flat_end and len(ledger) > 0 and int(ledger["pos"].iloc[-1]) != 0:
-        t_l = ledger.index[-1]
-        m1_l, m2_l, cash_l = float(ledger["m1"].iloc[-1]), float(ledger["m2"].iloc[-1]), float(ledger["cash"].iloc[-1])
-        cash_l += (m1_l * float(s1.loc[t_l]) + m2_l * float(s2.loc[t_l])) - (abs(m1_l) + abs(m2_l)) * c
-        ledger.loc[t_l, ["cash", "m1", "m2", "pos", "book_value"]] = [cash_l, 0.0, 0.0, 0, cash_l]
-
-    d_bv = ledger["book_value"].diff().dropna()
-    sharpe = float(d_bv.mean() / d_bv.std(ddof=1) * math.sqrt(252.0)) if len(d_bv) > 2 and d_bv.std() > 0 else 0.0
-    return BacktestResult(ledger, {"pnl": float(ledger["book_value"].iloc[-1] - ledger["book_value"].iloc[0]) if len(ledger) > 1 else 0.0, "sharpe": sharpe})
-
-if __name__ == "__main__":
-    mp.freeze_support()
-    rng = np.random.default_rng(0)
-    n = 800
-    idx = pd.date_range("2019-01-01", periods=n, freq="B")
-    s2 = pd.Series(np.cumsum(rng.normal(0, 1, n)) + 100, index=idx)
-    s1 = pd.Series(0.7 * s2 + 10 + rng.normal(0, 2, n), index=idx)
-    hed = rolling_bayesian_rw_hedge_ratio(s1, s2, window=252, n_jobs=4)
-    bt = backtest_dynamic_pairs_rolling(s1, s2, hed.alpha_hat, hed.beta_hat, ou_window=252, c=0.001)
-    print(bt.metrics)

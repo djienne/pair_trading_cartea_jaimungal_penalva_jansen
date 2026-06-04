@@ -9,6 +9,9 @@ from utils import load_config, pair_id, load_pair_data, save_pair_data, valid_ou
 
 
 def method_moments(x: np.ndarray, dt: float) -> Tuple[float, float, float]:
+    # Returns (theta, mu, sigma) where `theta` is the OU mean-reversion SPEED (stored as `kappa`
+    # by calibrate_pair) and `mu` is the long-run LEVEL. This is the OPPOSITE meaning of `theta`
+    # in band_calc.CointOpti, where theta denotes the long-run level.
     mu = float(np.mean(x))
     y = (x[1:] - x[:-1]) / dt
     exog = mu - x[:-1]
@@ -19,6 +22,7 @@ def method_moments(x: np.ndarray, dt: float) -> Tuple[float, float, float]:
 
 
 def neg_log_likelihood(params: np.ndarray, x: np.ndarray, dt: float) -> float:
+    # Here `theta` is the mean-reversion SPEED (kappa), `mu` the long-run LEVEL.
     theta, mu, sigma = params
     if sigma <= 0 or theta < 0:
         return 1e10

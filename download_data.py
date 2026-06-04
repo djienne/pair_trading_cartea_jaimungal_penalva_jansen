@@ -73,6 +73,17 @@ def fetch_klines(
     return response.json()
 
 
+def drop_unclosed(df: pd.DataFrame, now_ms: int) -> pd.DataFrame:
+    """
+    Drop candles whose close_time has not yet passed (i.e. the currently-forming bar), so the
+    latest saved row is never partial. Returns a copy with a clean default RangeIndex (required
+    by feather).
+    """
+    if "close_time" in df.columns:
+        df = df[df["close_time"] < now_ms]
+    return df.reset_index(drop=True)
+
+
 def klines_to_frame(klines: list) -> pd.DataFrame:
     df = pd.DataFrame(klines, columns=COLUMNS)
     for col in NUMERIC_COLUMNS:
@@ -146,6 +157,14 @@ def update_symbol_data(
         )
     else:
         combined = new_df.sort_values("open_time")
+
+    # Drop the currently-forming (unclosed) candle so the latest saved row is never partial-bar data.
+    # A Binance kline is closed only once the wall clock passes its close_time.
+    combined = drop_unclosed(combined, int(time.time() * 1000))
+
+    if combined.empty:
+        print(f"{symbol} {interval}: only unclosed candle(s) available; nothing saved.")
+        return existing
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     combined.to_feather(out_path)

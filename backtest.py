@@ -41,8 +41,9 @@ def backtest_pair(pair: Dict, config: Dict) -> pd.DataFrame:
     pos = 0          # Current position: +1 (Long Portfolio), -1 (Short Portfolio), 0 (Flat)
     m1 = 0.0         # Quantity of Asset 1 (Y)
     m2 = 0.0         # Quantity of Asset 2 (X)
-    cash = float(config.get("start_equity", 1000)) # Start with all cash
-    
+    start_equity = float(config.get("start_equity", 1000))
+    cash = start_equity  # Start with all cash
+
     # We track Book Value (BV) = Cash + Market Value of Positions
     book_value_arr = np.zeros(n)
     pos_arr = np.zeros(n)
@@ -51,109 +52,163 @@ def backtest_pair(pair: Dict, config: Dict) -> pd.DataFrame:
     cash_arr = np.zeros(n)
     turnover_arr = np.zeros(n)
 
-    fee_rate = float(config.get("fee_rate", 0.001))
+    fee_rate = float(config.get("fee_rate", 0.001))  # fraction of traded notional
     flip_signals = bool(config.get("flip_signals", False))
+
+    # --- Position sizing ---
+    # Scale the unit bundle (1 unit of Y, beta units of X) by a single factor q so that
+    # exposure is proportional to current capital rather than to raw asset price.
+    #   "gross"       -> total gross notional |m1*py| + |m2*px| == target_gross_leverage * equity
+    #   "net_long"    -> the Y leg notional == capital_per_trade_frac * equity
+    #   "legacy_unit" -> q = 1.0 (reproduces the old fixed-unit behaviour exactly)
+    sizing_mode = str(config.get("sizing_mode", "gross")).lower()
+    target_gross_leverage = float(config.get("target_gross_leverage", 1.0))
+    capital_per_trade_frac = float(config.get("capital_per_trade_frac", 0.5))
+    # Execution lag: the signal/bands from bar (i - lag) drive the trade executed at bar i's
+    # price. lag = 0 keeps the original same-bar decide-and-fill behaviour.
+    lag = max(0, int(config.get("execution_lag_bars", 0)))
+
+    # --- Risk controls (opt-in, default off) ---
+    # Equity-drawdown stop-loss: force-flat an open position once its mark-to-market loss exceeds
+    # stop_loss_frac of the equity at entry (e.g. 0.25 = 25%). null/0 disables it.
+    _sl = config.get("stop_loss_frac", None)
+    stop_loss_frac = float(_sl) if _sl not in (None, "", 0, 0.0) else 0.0
+    # Daily rehedge: each bar while holding, refresh the X leg to -beta_t * m1 so the hedge tracks
+    # the current beta (pays fees on the delta). Off => hold the original bundle until exit.
+    rehedge_daily = bool(config.get("rehedge_daily", False))
+    equity_at_entry = 0.0  # book value when the current position was opened (for the stop-loss)
 
     # Initial state
     book_value_arr[0] = cash
     cash_arr[0] = cash
 
     for i in range(1, n):
-        # Skip if any required data is missing (NaN)
-        if not (np.isfinite(epsilon[i]) and np.isfinite(lower[i]) and np.isfinite(upper[i])):
-            # Carry forward state
-            book_value_arr[i] = cash + m1 * y[i] + m2 * x[i]
+        # Prices for execution / mark-to-market at the current bar.
+        py = y[i]
+        px = x[i]
+
+        # The decision (signal + bands) comes from bar (i - lag).
+        sig_i = i - lag
+
+        # Skip if the decision bar is out of range or any required data is missing (NaN).
+        if sig_i < 0 or not (
+            np.isfinite(epsilon[sig_i])
+            and np.isfinite(lower[sig_i])
+            and np.isfinite(upper[sig_i])
+        ):
+            # Carry forward state, marking to market at current prices.
+            book_value_arr[i] = cash + m1 * py + m2 * px
             pos_arr[i] = pos
             m1_arr[i] = m1
             m2_arr[i] = m2
             cash_arr[i] = cash
             continue
 
-        z = epsilon[i]
-        curr_lower = lower[i]
-        curr_upper = upper[i]
-        curr_mu = mu[i]
-        curr_beta = beta[i]
+        z = epsilon[sig_i]
+        curr_lower = lower[sig_i]
+        curr_upper = upper[sig_i]
+        curr_mu = mu[sig_i]
+        curr_beta = beta[sig_i]
 
         # Flip signals: swap upper/lower bands to reverse entry/exit logic
         if flip_signals:
             curr_lower, curr_upper = curr_upper, curr_lower
-        
-        # Prices
-        py = y[i]
-        px = x[i]
 
-        prev_pos = pos
-        
         # --- Trading Logic ---
         # 1. Check Entries
         if pos == 0:
-            if z <= curr_lower:
-                # Enter LONG Portfolio: Buy 1 unit of Y, Sell beta units of X
-                pos = 1
-                target_m1 = 1.0
-                target_m2 = -curr_beta
-            elif z >= curr_upper:
-                # Enter SHORT Portfolio: Sell 1 unit of Y, Buy beta units of X
-                pos = -1
-                target_m1 = -1.0
-                target_m2 = curr_beta
+            enter_long = z <= curr_lower
+            enter_short = z >= curr_upper
+            if enter_long or enter_short:
+                # Size the unit bundle relative to current book value (see sizing config).
+                equity_now = cash + m1 * py + m2 * px  # == cash when flat
+                unit_gross = abs(py) + abs(curr_beta * px)
+                if equity_now > 0 and unit_gross > 1e-12 and np.isfinite(unit_gross):
+                    sign_y = 1.0 if enter_long else -1.0
+                    if sizing_mode == "legacy_unit":
+                        q = 1.0
+                    elif sizing_mode == "net_long":
+                        q = (capital_per_trade_frac * equity_now) / abs(py) if abs(py) > 1e-12 else 0.0
+                    else:  # "gross"
+                        q = (target_gross_leverage * equity_now) / unit_gross
+                    # LONG portfolio: long q units of Y, short beta*q units of X (short flips signs).
+                    pos = 1 if enter_long else -1
+                    target_m1 = sign_y * q
+                    target_m2 = -sign_y * curr_beta * q
+                    equity_at_entry = equity_now  # baseline for the stop-loss
+                else:
+                    # Degenerate sizing (non-positive equity or zero gross): stay flat.
+                    target_m1 = 0.0
+                    target_m2 = 0.0
             else:
                 # Stay Flat
                 target_m1 = 0.0
                 target_m2 = 0.0
-        
+
         # 2. Check Exits
         elif pos == 1: # Currently Long
+            # Mark-to-market before any action this bar (for the stop-loss check).
+            cur_bv = cash + m1 * py + m2 * px
+            stop_hit = stop_loss_frac > 0.0 and (cur_bv - equity_at_entry) <= -stop_loss_frac * equity_at_entry
             # Exit condition depends on flip_signals
             exit_long = (z <= curr_mu) if flip_signals else (z >= curr_mu)
-            if exit_long:
-                # Exit to Flat
+            if exit_long or stop_hit:
+                # Exit to Flat (band exit or stop-loss)
                 pos = 0
                 target_m1 = 0.0
                 target_m2 = 0.0
+            elif rehedge_daily:
+                # Keep the Y leg; refresh the X leg to the current hedge ratio.
+                target_m1 = m1
+                target_m2 = -curr_beta * m1
             else:
-                # Hold (Simple hold, no re-hedging logic in this basic version to match simple backtest speed)
-                # Note: In a full dynamic hedge, we might adjust m2 to match new beta.
-                # For now, we hold the initial bundle until exit.
+                # Hold the original bundle until exit.
                 target_m1 = m1
                 target_m2 = m2
 
         elif pos == -1: # Currently Short
+            cur_bv = cash + m1 * py + m2 * px
+            stop_hit = stop_loss_frac > 0.0 and (cur_bv - equity_at_entry) <= -stop_loss_frac * equity_at_entry
             # Exit condition depends on flip_signals
             exit_short = (z >= curr_mu) if flip_signals else (z <= curr_mu)
-            if exit_short:
-                # Exit to Flat
+            if exit_short or stop_hit:
+                # Exit to Flat (band exit or stop-loss)
                 pos = 0
                 target_m1 = 0.0
                 target_m2 = 0.0
+            elif rehedge_daily:
+                # Keep the Y leg; refresh the X leg to the current hedge ratio (m1 is negative here).
+                target_m1 = m1
+                target_m2 = -curr_beta * m1
             else:
-                # Hold
+                # Hold the original bundle until exit.
                 target_m1 = m1
                 target_m2 = m2
-        
+
         # --- Execution ---
         # Calculate turnover and costs
         dm1 = target_m1 - m1
         dm2 = target_m2 - m2
-        
+
         trade_value = abs(dm1 * py) + abs(dm2 * px)
+        # fee_rate is a fraction of traded notional (distinct from band_calc's transaction_cost,
+        # which is in absolute spread units).
         cost = trade_value * fee_rate
-        
+
         # Update cash: Cash decreases by cost of buying assets, increases by selling
         # Cost of buying dm1 of Y is (dm1 * py)
         cash -= (dm1 * py + dm2 * px)
         cash -= cost
-        
+
         m1 = target_m1
         m2 = target_m2
-        
+
         turnover_arr[i] = trade_value
         pos_arr[i] = pos
         m1_arr[i] = m1
         m2_arr[i] = m2
         cash_arr[i] = cash
-        
+
         # Mark to Market
         book_value_arr[i] = cash + m1 * py + m2 * px
 
@@ -164,8 +219,21 @@ def backtest_pair(pair: Dict, config: Dict) -> pd.DataFrame:
     df["equity"] = book_value_arr
     df["turnover"] = turnover_arr
     
-    # Calculate returns for metrics
-    df["strategy_return"] = df["equity"].pct_change().fillna(0.0)
+    # Calculate returns for metrics.
+    # PnL over prior equity, guarded against a non-positive denominator so that a (pathological,
+    # leveraged) equity dip through zero cannot produce inf/NaN or absurd percentage returns.
+    prev_equity = np.empty(n)
+    prev_equity[0] = start_equity
+    if n > 1:
+        prev_equity[1:] = book_value_arr[:-1]
+    pnl = np.empty(n)
+    pnl[0] = 0.0
+    if n > 1:
+        pnl[1:] = book_value_arr[1:] - book_value_arr[:-1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        denom = np.where(prev_equity > 1e-9, prev_equity, np.nan)
+        strat_ret = pnl / denom
+    df["strategy_return"] = pd.Series(strat_ret, index=df.index).fillna(0.0)
 
     # Save using consolidated utility
     save_pair_data(df, pair, config, "backtest")

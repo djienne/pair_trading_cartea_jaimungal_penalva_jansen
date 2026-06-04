@@ -42,13 +42,20 @@ def compute_cache_key(pair: Dict, config: Dict, y_path: str, x_path: str) -> str
     """
     bayes_cfg = config.get("bayesian_config", {})
     relevant_config = {
+        # Bump this when the estimator math changes so stale caches invalidate automatically.
+        "cache_schema_version": "v2",
         "window": int(config.get("rolling_window_days", 30)),
         "inference_method": bayes_cfg.get("inference_method", "advi"),
         "advi_steps": int(bayes_cfg.get("advi_steps", 2000)),
         "draws": int(bayes_cfg.get("draws", 500)),
         "tune": int(bayes_cfg.get("tune", 500)),
+        "target_accept": float(bayes_cfg.get("target_accept", 0.9)),
+        "use_ols_init": bool(bayes_cfg.get("use_ols_init", True)),
+        "warm_start": bool(bayes_cfg.get("warm_start", False)),
+        "random_seed": int(bayes_cfg.get("random_seed", 42)),
         "candle_interval": config.get("candle_interval", "1d"),
-        # We don't include ranking_threads because it affects speed, not the result
+        # n_jobs is intentionally excluded: results are n_jobs-invariant when warm_start is off,
+        # and warm_start forces sequential fitting anyway.
     }
     
     data_state = {
@@ -112,12 +119,14 @@ def calibrate_pair(pair: Dict, config: Dict, n_jobs_override: Optional[int] = No
     tune = int(bayes_cfg.get("tune", 500))
     target_accept = float(bayes_cfg.get("target_accept", 0.9))
     use_ols_init = bool(bayes_cfg.get("use_ols_init", True))
-    
-    # Determine n_jobs: use override if present, else default 10
+    warm_start = bool(bayes_cfg.get("warm_start", False))
+    random_seed = int(bayes_cfg.get("random_seed", 42))
+
+    # Determine n_jobs: explicit override wins, else config (bayesian_config.n_jobs), else 1.
     if n_jobs_override is not None:
         n_jobs = int(n_jobs_override)
     else:
-        n_jobs = 10
+        n_jobs = int(bayes_cfg.get("n_jobs", 1))
 
     if len(data) <= window + 2:
         raise ValueError(f"Insufficient data for {pair_id(pair)} (len={len(data)} <= window={window}).")
@@ -137,8 +146,8 @@ def calibrate_pair(pair: Dict, config: Dict, n_jobs_override: Optional[int] = No
             tune=tune,
             target_accept=target_accept,
             update_every=1,
-            warm_start=True,
-            random_seed=42,
+            warm_start=warm_start,
+            random_seed=random_seed,
             use_ols_init=use_ols_init,
             n_jobs=n_jobs,
             show_progress=show_progress
@@ -150,14 +159,16 @@ def calibrate_pair(pair: Dict, config: Dict, n_jobs_override: Optional[int] = No
     
     # 3. Merge results back into the dataframe
     results = data.copy()
-    # Align indices carefully
+    # Align indices carefully. hed.* are indexed from the (window)-th date onward, so the leading
+    # `window` rows become NaN on index-aligned assignment.
     results["alpha"] = hed.alpha_hat
     results["beta"] = hed.beta_hat
     results["sigma_obs"] = hed.sigma_obs_hat
-    
-    # Fill missing values before calculation if needed
-    results = results.dropna(subset=["alpha", "beta"])
-    
+
+    # IMPORTANT: keep ALL rows (leading NaN) for parity with the OLS path (coint_calibrate.py),
+    # which also emits full-length arrays with NaN for the first `window` bars. Dropping them here
+    # would shift the positional rolling windows in ou_calibrate.py / band_calc.py and make the OLS
+    # and Bayesian backtests start on different effective dates.
     results["epsilon"] = results["y_close"] - (results["alpha"] + results["beta"] * results["x_close"])
     
     # Dummy columns for compatibility

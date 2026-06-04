@@ -19,7 +19,7 @@ It is based on info from the book "ALGORITHMIC AND HIGH-FREQUENCY TRADING" by Ca
 ## Example Equity Curve
 
 <p align="center">
-  <img src="data/plots/BEST_EQUITY_BTCUSDT-XRPUSDT_1d_w300_20200106-20260105.png" alt="Equity curve for BNB-SOL 1d window 300" width="700" />
+  <img src="data/plots/BEST_EQUITY_BTCUSDT-XRPUSDT_1d_w300_20200106-20260105.png" alt="Equity curve for BTCUSDT-XRPUSDT 1d window 300" width="700" />
 </p>
 
 ## Project Structure
@@ -34,8 +34,8 @@ It is based on info from the book "ALGORITHMIC AND HIGH-FREQUENCY TRADING" by Ca
 - `backtest.py`: Executes the strategy and generates performance reports.
 
 ### Orchestration
-- `run_all.py`: Main entry point to run the full pipeline sequentially.
-- `run_and_rank.py`: Bulk backtest runner with parallel execution and ranking.
+- `run_all_one_pair.py`: Main entry point to run the full pipeline sequentially for the configured pair(s).
+- `run_and_rank.py`: Bulk sequential backtest runner and ranking across all available symbols.
 
 ### Utilities
 - `utils.py`: Shared utilities for data loading, path management, and configuration.
@@ -48,8 +48,8 @@ It is based on info from the book "ALGORITHMIC AND HIGH-FREQUENCY TRADING" by Ca
 
 ### Configuration
 - `config.json`: Centralized configuration for parameters, pairs, and intervals.
-  - `transaction_cost`: Used in `band_calc.py` to shift the optimal OU bands.
-  - `fee_rate`: Used in `backtest.py` to apply turnover-based trading fees.
+  - `transaction_cost`: Used in `band_calc.py` to shift the optimal OU bands. **Units: absolute spread/residual (price) units** (subtracted directly from the band level).
+  - `fee_rate`: Used in `backtest.py` to apply turnover-based trading fees. **Units: a fraction of traded notional** (e.g. `0.001` = 10 bps). These two are different units despite often sharing a value.
   - `bayesian_inference_method`: Choose `"advi"` (fast) or `"nuts"` (precise) for Bayesian calibration.
 
 ## Getting Started
@@ -71,7 +71,7 @@ pip install -r requirements.txt
 1. **Configure your pairs**: Edit `config.json` to define the assets you want to trade and your preferred rolling window.
 2. **Run the pipeline**:
 ```bash
-python run_all.py
+python run_all_one_pair.py
 ```
 
 Results including processed data and equity plots will be available in the `data/` directory.

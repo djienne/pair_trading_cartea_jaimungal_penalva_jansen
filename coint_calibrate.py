@@ -20,9 +20,13 @@ def compute_epsilon(y: pd.Series, x: pd.Series, alpha: float, beta: float) -> pd
     return y - (alpha + beta * x)
 
 
-def adf_check(series: pd.Series, alpha: float) -> Tuple[float, bool]:
+def adf_check(series: pd.Series, alpha: float, maxlag=None) -> Tuple[float, bool]:
     try:
-        adf_result = adfuller(series, autolag="AIC")
+        if maxlag is not None:
+            # Fixed lag order: much faster than re-running AIC selection on every window.
+            adf_result = adfuller(series, maxlag=int(maxlag), autolag=None)
+        else:
+            adf_result = adfuller(series, autolag="AIC")
         p_value = adf_result[1]
         return float(p_value), p_value < alpha
     except Exception:
@@ -44,6 +48,7 @@ def calibrate_pair(pair: Dict, config: Dict) -> pd.DataFrame:
     adf_alpha = float(config.get("adf_alpha", 0.05))
     log_adf = bool(config.get("log_adf_each_window", True))
     log_every = int(config.get("log_every_n", 1))
+    adf_maxlag = config.get("adf_maxlag", None)  # None -> AIC autolag (default)
 
     idx = data.index
     n = len(data)
@@ -63,7 +68,7 @@ def calibrate_pair(pair: Dict, config: Dict) -> pd.DataFrame:
         alpha, beta, r2 = ols_hedge_ratio(y_window, x_window)
         epsilon_window = compute_epsilon(y_window, x_window, alpha, beta)
 
-        p_value, passed = adf_check(epsilon_window, adf_alpha)
+        p_value, passed = adf_check(epsilon_window, adf_alpha, maxlag=adf_maxlag)
         if log_adf and (i % log_every == 0):
             status = "PASS" if passed else "FAIL"
             print(f"{idx[i].date()} ADF p={p_value:.4f} -> {status}")
