@@ -13,14 +13,23 @@ It is based on info from the book "ALGORITHMIC AND HIGH-FREQUENCY TRADING" by Ca
     - OU process parameter estimation using Maximum Likelihood Estimation (MLE) and Method of Moments (MoM).
 - **Optimal Trading Bands**: Calculates entry and exit thresholds by solving the optimal stopping problem for a mean-reverting process.
 - **Robust Backtesting**: Full backtest engine accounting for transaction fees and turnover.
-- **Pair Ranking**: Automated ranking of cointegrated pairs across the market.
+- **Capital-Normalized Sizing & Risk Controls**: Positions sized to a target gross leverage of current equity (no fixed-unit blow-ups), with optional equity-drawdown stop-loss and daily rehedging.
+- **Pair Ranking**: Automated ranking of cointegrated pairs across the market (by Sharpe or absolute return).
 - **Visualization**: Generates detailed equity curves saved automatically to the `data/plots` directory.
 
-## Example Equity Curve
+## Example Equity Curve — Best Backtested Pair (`LTCUSDT-UNIUSDT`)
+
+`LTCUSDT-UNIUSDT` was the **top pair by Sharpe in the full 91-pair OLS sweep** (`run_and_rank.py`). Backtested on daily candles over **2020-09-18 → 2025-12-27** with a 300-day rolling window, gross notional sized to **1.0× current equity**, no stop-loss, and 10 bps fees:
 
 <p align="center">
-  <img src="data/plots/BEST_EQUITY_BTCUSDT-XRPUSDT_1d_w300_20200106-20260105.png" alt="Equity curve for BTCUSDT-XRPUSDT 1d window 300" width="700" />
+  <img src="data/plots/EQUITY_LTCUSDT-UNIUSDT_1d_w300.png" alt="LTCUSDT-UNIUSDT equity curve (OLS, window 300, gross 1.0x, no stop)" width="760" />
 </p>
+
+| Return | Sharpe (ann., 365) | Final equity | Max drawdown | Min equity | Trades (fills) |
+|:------:|:------------------:|:------------:|:------------:|:----------:|:--------------:|
+| **+141%** | **0.72** | $2,409 (from $1,000) | −45% | $954 | 25 |
+
+> These are **in-sample** results over the full history with no walk-forward — treat the pair as a screening result, not a validated live edge. Across the 91-pair sweep only ~10 pairs were solidly profitable and solvent, so the edge is concentrated. Adding a 25% equity-drawdown stop barely changes this pair (`stop_loss_frac` rarely triggers) but, across the whole universe, cuts pairs that end insolvent from 29 → 2.
 
 ## Project Structure
 
@@ -48,9 +57,13 @@ It is based on info from the book "ALGORITHMIC AND HIGH-FREQUENCY TRADING" by Ca
 
 ### Configuration
 - `config.json`: Centralized configuration for parameters, pairs, and intervals.
+  - `cointegration_method`: `"ols"` (rolling OLS hedge ratio + ADF) or `"bayesian"` (rolling Bayesian random-walk regression).
+  - `ranking_metric`: `"sharpe"` or `"returns"` — the metric `run_and_rank.py` ranks pairs by.
+  - `sizing_mode` / `target_gross_leverage`: position sizing. In `"gross"` mode the gross notional `|m1·Py| + |m2·Px|` is set to `target_gross_leverage × current equity` (`1.0` = fully invested, no leverage). `"legacy_unit"` reproduces the old fixed 1-unit-of-Y behaviour.
+  - `stop_loss_frac` / `rehedge_daily`: optional risk controls. `stop_loss_frac` (e.g. `0.25`, `null`/`0` = off) force-flats a position once its open mark-to-market loss exceeds that fraction of entry equity; `rehedge_daily` refreshes the X leg to `-beta_t · m1` each bar to track the current hedge ratio (pays extra fees).
   - `transaction_cost`: Used in `band_calc.py` to shift the optimal OU bands. **Units: absolute spread/residual (price) units** (subtracted directly from the band level).
   - `fee_rate`: Used in `backtest.py` to apply turnover-based trading fees. **Units: a fraction of traded notional** (e.g. `0.001` = 10 bps). These two are different units despite often sharing a value.
-  - `bayesian_inference_method`: Choose `"advi"` (fast) or `"nuts"` (precise) for Bayesian calibration.
+  - `bayesian_config.inference_method`: Choose `"advi"` (fast) or `"nuts"` (precise) for Bayesian calibration.
 
 ## Getting Started
 
