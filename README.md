@@ -31,6 +31,20 @@ It is based on info from the book "ALGORITHMIC AND HIGH-FREQUENCY TRADING" by Ca
 
 > These are **in-sample** results over the full history with no walk-forward — treat the pair as a screening result, not a validated live edge. Across the 91-pair sweep only ~10 pairs were solidly profitable and solvent, so the edge is concentrated. Adding a 25% equity-drawdown stop barely changes this pair (`stop_loss_frac` rarely triggers) but, across the whole universe, cuts pairs that end insolvent from 29 → 2.
 
+## Example Equity Curve — Best Pair with a 25% Stop-Loss (`LTCUSDT-UNIUSDT`)
+
+Re-running the **same 91-pair sweep with a 25% equity-drawdown stop** (`stop_loss_frac = 0.25`) leaves `LTCUSDT-UNIUSDT` on top of the Sharpe ranking. The stop barely touches this particular pair, but it is what makes the *leaderboard itself* trustworthy (see note below):
+
+<p align="center">
+  <img src="data/plots/EQUITY_LTCUSDT-UNIUSDT_1d_w300_STOP25.png" alt="LTCUSDT-UNIUSDT equity curve (OLS, window 300, gross 1.0x, 25% stop-loss)" width="760" />
+</p>
+
+| Return | Sharpe (ann., 365) | Final equity | Max drawdown | Min equity | Trades (fills) |
+|:------:|:------------------:|:------------:|:------------:|:----------:|:--------------:|
+| **+135%** | **0.71** | $2,354 (from $1,000) | −46% | $954 | 27 |
+
+> The 25% stop **barely changes this winner** (no-stop +141% / 0.72 → +135% / 0.71; this pair's per-trade loss rarely reaches 25%). Its real value is **portfolio-wide**: across the full 91-pair sweep it cuts pairs that end **insolvent from 29 → 2** (worst final equity −$9,845 → −$369) and demotes the high-Sharpe *volatility-drag mirages* (e.g. `DOGEUSDT-XRPUSDT`, `ADAUSDT-BCHUSDT`, which blew through zero but had their post-ruin returns masked) out of the top ranks. So for a single hand-picked pair the stop is roughly irrelevant; for **screening/ranking many pairs it makes the rankings honest**.
+
 ## Project Structure
 
 ### Core Pipeline
