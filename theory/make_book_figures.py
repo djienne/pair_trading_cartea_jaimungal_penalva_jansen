@@ -16,6 +16,7 @@ Deterministic: every random draw uses a fixed seed.
 from __future__ import annotations
 
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -23,9 +24,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# Resolve paths relative to this script so it runs from anywhere. It lives in theory/, one level
+# below the repo root where data/ lives.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, SCRIPT_DIR)
+
 from book_opt import OUOpt
 
-FIG_DIR = "figures"
+FIG_DIR = os.path.join(SCRIPT_DIR, "figures")
 os.makedirs(FIG_DIR, exist_ok=True)
 
 
@@ -90,8 +97,8 @@ def naive_band_strategy(eps, theta, band, exit_thr):
 # Fig 11.1 - a real co-integrated crypto pair (substitute for INTC / SMH)
 # ======================================================================================
 def fig_11_1():
-    y = pd.read_feather("data/feather/LTCUSDT_1d.feather")[["open_time_dt", "close"]]
-    x = pd.read_feather("data/feather/UNIUSDT_1d.feather")[["open_time_dt", "close"]]
+    y = pd.read_feather(os.path.join(REPO_ROOT, "data", "feather", "LTCUSDT_1d.feather"))[["open_time_dt", "close"]]
+    x = pd.read_feather(os.path.join(REPO_ROOT, "data", "feather", "UNIUSDT_1d.feather"))[["open_time_dt", "close"]]
     m = y.merge(x, on="open_time_dt", suffixes=("_y", "_x")).dropna()
     # a representative ~10-month window
     m = m.iloc[-300:-20].reset_index(drop=True)

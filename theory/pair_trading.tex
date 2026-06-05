@@ -1,0 +1,452 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{bm}
+\usepackage[hidelinks]{hyperref}
+
+% --- notation helpers ---
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\dd}{\,d}
+\DeclareMathOperator{\Tr}{Tr}
+\DeclareMathOperator*{\supop}{sup}
+
+\title{Pairs Trading and Statistical Arbitrage Strategies}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Note.} This is a self-contained write-up of the theory behind the pairs-trading and
+statistical-arbitrage strategy implemented in this repository. The text is paraphrased and the eight
+figures are \emph{generated from the repository's own code} (\texttt{make\_book\_figures.py}, which
+calls the optimal-stopping solver \texttt{book\_opt.py} together with the backtest's models). As a
+correctness check, the entry/exit trigger levels plotted in Figure~\ref{fig:11_6} agree to four
+decimals with the trigger table given in Table~\ref{tab:triggers}.
+
+\section{Pairs Trading and Statistical Arbitrage Strategies}
+
+\subsection{Introduction}
+
+How well a trading algorithm performs usually comes down to how accurately it can anticipate price
+moves, and forecasting a basket of assets is typically easier than forecasting any one of them in
+isolation. \textbf{Pairs trading} exploits exactly this: rather than betting on a single name, one
+trades a portfolio built as a linear combination of two assets, chosen so that their \emph{joint}
+behaviour is more predictable than either leg alone. The crucial ingredient is the way the two assets
+move together. Consider, for instance, two assets whose spread (the gap between their prices) tends to
+follow a recognisable pattern and only departs from it temporarily. A pairs-trading rule then makes
+money by wagering that such departures eventually revert to their usual level. Strategies of this kind
+are often grouped under the heading of \textbf{statistical arbitrage} (StatArb). They are not genuine
+arbitrages---which earn more than the risk-free rate at zero risk---but instead lean on the
+\emph{typical} dynamics of prices, so they do carry risk.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig_11_1.pdf}
+  \caption{Two assets that move together over a trading window: (left) each midprice divided by its
+  mean; (right) the resulting co-integration factor, shown with its mean (dashed) and $\pm 2$
+  standard-deviation bands (dash-dotted). A real co-integrated crypto pair (LTC, UNI) is used here as
+  the illustrative example.}
+  \label{fig:11_1}
+\end{figure}
+
+Figure~\ref{fig:11_1} illustrates the idea with two assets that broadly track one another in the same
+direction. Going long one leg and short the other produces a combined position that is calmer and
+easier to forecast than either asset by itself. A sharper version of the idea works with the
+co-integration factor of the two prices, a quantity of the form $\eps_t = A\,S^{(1)}_t + B\,S^{(2)}_t$
+whose coefficients $A$ and $B$ are fitted to the data. When the mean-reverting pattern persists, a
+portfolio holding $A$ units of the first asset and $|B|$ units short of the second should fluctuate
+around the average level of $\eps_t$. The trading rule is then straightforward: buy the portfolio when
+it looks cheap and unwind once it richens, or sell it when it looks expensive and unwind once it
+cheapens.
+
+The remainder is organised as follows. Section~\ref{sec:adhoc} covers simple rules that place fixed
+bands around the equilibrium level; Section~\ref{sec:optimal} derives the bands that are optimal in a
+precise sense; and Section~\ref{sec:sta} treats the case where it is the \emph{drifts} of a basket of
+assets, rather than their prices, that are co-integrated.
+
+\subsection{Ad Hoc Bands}\label{sec:adhoc}
+
+The most basic way to harvest the factor's mean-reversion is to set bands one standard deviation either
+side of the equilibrium level (taken to be zero here): buy one unit of the portfolio when the lower band
+is touched and sell one unit when the upper band is touched. Having opened a position, the rule then
+waits for the factor to come back close to equilibrium---say within $1/10$ of a standard deviation---and
+closes out there.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.8\textwidth]{figures/fig_11_2.pdf}
+  \caption{One simulated path of the co-integration factor together with the strategy's position
+  (inventory) and its running book value, under a standard-deviation band rule.}
+  \label{fig:11_2}
+\end{figure}
+
+The three panels of Figure~\ref{fig:11_2} show, respectively, a simulated factor path, the inventory as
+the rule opens and closes trades, and the cumulative marked-to-market book value. Operationally, the
+rule waits until the path crosses an outer band, opens the matching position betting on reversion, and
+then carries the portfolio, whose value tracks the factor one-for-one. Its book value is
+\begin{equation}
+  BV_t = X_t + \beta_t\left( A\,S^{(1)}_t + B\,S^{(2)}_t \right),
+\end{equation}
+where $X_t$ is accumulated cash and $\beta_t \in \{-1,0,1\}$ is the number of portfolio units held. The
+position is unwound once the factor returns to the inner band, banking a profit roughly equal to the
+spacing between the outer and inner bands.
+
+In the path shown the strategy happens to finish flat, but that is not guaranteed: a position opened
+near the end of the horizon may never revert in time, leaving the trader holding inventory and exposed
+to losses. Widening the bands makes leftover inventory more likely; it also raises the profit per
+completed round trip while reducing how many outer-to-inner crossings occur over the horizon.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig_11_3.pdf}
+  \caption{P\&L histograms over 10{,}000 simulated paths for the naive rule at several band widths:
+  (a) $0.25\times$, (b) $0.5\times$, (c) $1.0\times$, (d) $2.0\times$ the standard deviation. The
+  Sharpe ratio rises and then falls as the band grows, and the widest band produces a clearly
+  multimodal distribution.}
+  \label{fig:11_3}
+\end{figure}
+
+Figure~\ref{fig:11_3} collects the profit-and-loss (P\&L) over 10{,}000 simulated paths, each time
+forming the factor and trading as above. The Sharpe ratio---mean P\&L over its standard
+deviation---climbs as the band widens and then turns down again. The histograms are also multimodal:
+because each completed round trip earns about one band's width, the P\&L piles up near whole multiples
+of the band, and the weight on each multiple reflects how likely that many round trips are within the
+horizon. The mass is not concentrated solely at one band width because, near the end of the horizon,
+the factor may not have reverted, forcing the trader to close at less than a full band's profit---or
+even at a loss.
+
+\subsection{Optimal Band Selection}\label{sec:optimal}
+
+We now look for the genuinely optimal entry and exit rule by framing it as an optimal-stopping problem
+in which the trader executes a single round trip and faces no fixed end date. Take the portfolio value
+(the co-integration factor) to follow Ornstein--Uhlenbeck dynamics,
+\begin{equation}
+  d\eps_t = \kappa(\theta - \eps_t)\dd t + \sigma \dd W_t,
+\end{equation}
+with $W_t$ a standard Brownian motion, $\kappa$ the reversion speed, $\theta$ the long-run level, and
+$\sigma$ the volatility. The payoff criterion for closing a long position is
+\begin{equation}
+  H_+^{(\tau)}(t,\eps) = \E_{t,\eps}\!\left[ e^{-\rho(\tau - t)}(\eps_\tau - c) \right],
+  \qquad
+  H_+(t,\eps) = \supop_{\tau} H_+^{(\tau)}(t,\eps),
+\end{equation}
+in which $c$ is the cost of unwinding and $\rho>0$ is the discount rate (effectively an impatience
+knob---larger $\rho$ drags the exit boundary toward the mean). The criterion for opening a long
+position is
+\begin{equation}
+  G_+^{(\tau)}(t,\eps) = \E_{t,\eps}\!\left[ e^{-\rho(\tau - t)}\big(H_+(\tau,\eps_\tau) - \eps_\tau - c\big) \right],
+  \qquad
+  G_+(t,\eps) = \supop_{\tau} G_+^{(\tau)}(t,\eps);
+\end{equation}
+on entry the trader pays $\eps + c$ and in return holds the exit option, worth $H_+$.
+
+Because the OU process is stationary, the value functions carry no explicit time dependence. The
+dynamic programming principle then forces $H$ and $G$ to obey the coupled variational inequalities
+\begin{align}
+  \max\big\{(\mathcal{L} - \rho)H_+(\eps)\,;\,(\eps - c) - H_+(\eps)\big\} &= 0,\\
+  \max\big\{(\mathcal{L} - \rho)G_+(\eps)\,;\,(H_+(\eps) - \eps - c) - G_+(\eps)\big\} &= 0,
+\end{align}
+where $\mathcal{L}$ is the generator of the factor process,
+\begin{equation}
+  \mathcal{L} = \kappa(\theta - \eps)\,\partial_\eps + \tfrac{1}{2}\sigma^2\,\partial_{\eps\eps}.
+\end{equation}
+
+\subsubsection{The Optimal Exit Problem}
+
+The inequality governing $H$ is structurally like a perpetual call, and is solved by first finding the
+fundamental solutions of
+\begin{equation}\label{eq:111}
+  (\mathcal{L} - \rho)F(\eps) = 0, \tag{11.1}
+\end{equation}
+which we label $F_\pm(\eps)$. We then write $H_+(\eps) = A\,F_+(\eps) + B\,F_-(\eps)$ on the
+continuation set ($\eps < \eps^*$) and $H_+(\eps) = \eps - c$ on the exercise set ($\eps > \eps^*$),
+imposing value matching $H_+(\eps^*) = \eps^* - c$ and smooth pasting $\partial_\eps H_+(\eps^*)=1$.
+Explicitly, the fundamental solutions are
+\begin{equation}
+  F_+(\eps) = \int_0^\infty u^{\frac{\rho}{\kappa}-1}\,
+    e^{-\sqrt{\frac{2\kappa}{\sigma^2}}(\theta - \eps)u - \frac12 u^2}\dd u,
+  \qquad
+  F_-(\eps) = \int_0^\infty u^{\frac{\rho}{\kappa}-1}\,
+    e^{+\sqrt{\frac{2\kappa}{\sigma^2}}(\theta - \eps)u - \frac12 u^2}\dd u.
+\end{equation}
+A short calculation shows $F_+$ is positive, increasing and convex, whereas $F_-$ is positive,
+decreasing and convex. Since $H$ has to decay to zero as $\eps \to -\infty$, the coefficient $B$
+vanishes and
+\begin{equation}
+  H_+(\eps) = A\,F_+(\eps)\,\mathbf{1}_{\eps<\eps^*} + (\eps - c)\,\mathbf{1}_{\eps\ge\eps^*}.
+\end{equation}
+The two boundary conditions give $A\,F_+(\eps^*)=\eps^*-c$ and $A\,F_+'(\eps^*)=1$; dividing one by the
+other pins down the exit level as the unique root of
+\begin{equation}\label{eq:112}
+  (\eps^* - c)\,F_+'(\eps^*) = F_+(\eps^*), \tag{11.2}
+\end{equation}
+with $A = (\eps^*-c)/F_+(\eps^*)$, so that
+\begin{equation}
+  H_+(\eps) = \frac{F_+(\eps)}{F_+(\eps^*)}(\eps^* - c)\,\mathbf{1}_{\eps<\eps^*}
+    + (\eps - c)\,\mathbf{1}_{\eps\ge\eps^*}.
+\end{equation}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig_11_4.pdf}
+  \caption{Exit value function $H_+$ (solid where the trader waits, dashed where she exercises) and the
+  exit triggers (circles), for varying reversion speed $\kappa$ and discount rate $\rho$
+  ($\theta=0$, $\sigma=0.5$, $c=0.01$).}
+  \label{fig:11_4}
+\end{figure}
+
+Figure~\ref{fig:11_4} traces $H_+$ as $\kappa$ and $\rho$ change. Faster reversion pulls the trigger
+levels lower, because the factor is tugged back toward equilibrium more forcefully. A larger discount
+rate has the same effect, since it makes the trader less willing to wait for future payoffs.
+
+\subsubsection{The Optimal Entry Problem}
+
+With the exit rule in hand, the entry problem is another perpetual American option, this time with
+exercise value $H_+(\eps) - \eps - c$. Expecting $G_+$ to fall with $\eps$, we set
+\begin{equation}
+  G_+(\eps) = D\,F_-(\eps)\,\mathbf{1}_{\eps>\eps_*} + \big(H_+(\eps) - \eps - c\big)\,\mathbf{1}_{\eps\le\eps_*}.
+\end{equation}
+Matching value and slope gives $D\,F_-(\eps_*) = H_+(\eps_*) - \eps_* - c$ and
+$D\,F_-'(\eps_*) = H_+'(\eps_*) - 1$, and the entry trigger is the root of
+\begin{equation}\label{eq:113}
+  \big(H_+(\eps_*) - \eps_* - c\big)F_-'(\eps_*) = \big(H_+'(\eps_*) - 1\big)F_-(\eps_*). \tag{11.3}
+\end{equation}
+As expected $\eps_* < \eps^*$, and
+\begin{equation}
+  G_+(\eps) = \frac{F_-(\eps)}{F_-(\eps_*)}\big(H_+(\eps_*) - \eps_* - c\big)\mathbf{1}_{\eps>\eps_*}
+    + \big(H_+(\eps) - \eps - c\big)\mathbf{1}_{\eps\le\eps_*}.
+\end{equation}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig_11_5.pdf}
+  \caption{Entry value function $G_+$ (solid where the trader waits, dashed where she exercises) and the
+  entry triggers (circles), for varying $\kappa$ and $\rho$ ($\theta=0$, $\sigma=0.5$, $c=0.01$).}
+  \label{fig:11_5}
+\end{figure}
+
+Figure~\ref{fig:11_5} plots $G_+$ for the same parameter sweeps. Stronger reversion pushes the entry
+trigger up, closer to the equilibrium level. Comparing Figures~\ref{fig:11_5} and~\ref{fig:11_4} shows
+that entry and exit are not mirror images about the mean: discounting nudges the entry to sit nearer
+the equilibrium than the exit does.
+
+\subsubsection{Double-Sided Optimal Entry--Exit}
+
+Allow now both directions---the trader may open either long or short and later close optimally. The two
+exit criteria are
+\begin{equation}
+  H_+^{(\tau)}(t,\eps) = \E_{t,\eps}\big[e^{-\rho(\tau-t)}(\eps_\tau - c)\big],
+  \qquad
+  H_-^{(\tau)}(t,\eps) = \E_{t,\eps}\big[e^{-\rho(\tau-t)}(-\eps_\tau - c)\big],
+\end{equation}
+with $H_\pm = \supop_\tau H_\pm^{(\tau)}$. The long side $H_+$ is unchanged from before, so only $H_-$
+needs attention; it decreases in $\eps$ and tends to zero as $\eps \to \infty$:
+\begin{equation}
+  H_-(\eps) = A\,F_-(\eps)\,\mathbf{1}_{\eps>\eps^*_-} - (\eps + c)\,\mathbf{1}_{\eps\le\eps^*_-}.
+\end{equation}
+Value matching and smooth pasting deliver $A\,F_-(\eps^*_-) = -(\eps^*_- + c)$ and
+$A\,F_-'(\eps^*_-) = -1$, so the short-exit trigger solves
+\begin{equation}\label{eq:114}
+  (\eps^*_- + c)\,F_-'(\eps^*_-) = F_-(\eps^*_-). \tag{11.4}
+\end{equation}
+Collecting both sides, the exit value functions read
+\begin{align}
+  H_+(\eps) &= \frac{F_+(\eps)}{F_+(\eps^*_+)}(\eps^*_+ - c)\,\mathbf{1}_{\eps<\eps^*_+}
+    + (\eps - c)\,\mathbf{1}_{\eps\ge\eps^*_+},\\
+  H_-(\eps) &= -\frac{F_-(\eps)}{F_-(\eps^*_-)}(\eps^*_- + c)\,\mathbf{1}_{\eps>\eps^*_-}
+    - (\eps + c)\,\mathbf{1}_{\eps\le\eps^*_-}.
+\end{align}
+On the entry side, the value function $G$ is a mix of both fundamental solutions,
+$G(\eps) = A\,F_+(\eps) + B\,F_-(\eps)$, on the band between the two entry triggers, with $A$ and $B$
+fixed by value matching and smooth pasting at each trigger. A clean symmetry emerges: each optimal
+entry coincides with the optimal exit of the opposite side---entering long happens at the short-exit
+level, and vice versa.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig_11_6.pdf}
+  \caption{Two-sided problem: value functions $H_+$ (solid) and $H_-$ (dashed) with their optimal
+  triggers, for several $\kappa$ ($\rho=0.01$, $\sigma=0.5$, $\theta=1$, $c=0.01$). Circles mark the
+  long-exit levels and squares the short-exit levels; the accompanying table lists the computed values.}
+  \label{fig:11_6}
+\end{figure}
+
+Figure~\ref{fig:11_6} reports the value functions and triggers at $\rho=0.01$, $\sigma=0.5$,
+$\theta=1$, $c=0.01$. The exit levels are not symmetric about $\theta$, and each entry level matches the
+opposite side's exit level. The numerical triggers are listed below.
+
+\begin{table}[ht]
+  \centering
+  \begin{tabular}{ccccc}
+    \toprule
+    & \multicolumn{2}{c}{exit triggers} & \multicolumn{2}{c}{entry triggers}\\
+    \cmidrule(lr){2-3}\cmidrule(lr){4-5}
+    $\kappa$ & $\eps^*_+$ (long) & $\eps^*_-$ (short) & $\eps_{*+}$ (long) & $\eps_{*-}$ (short)\\
+    \midrule
+    0.5 & 1.9537 & $-0.4060$ & $-0.4060$ & 1.9537\\
+    1.0 & 1.7460 & $-0.1815$ & $-0.1815$ & 1.7460\\
+    2.0 & 1.5744 & $-0.0740$ & $-0.0740$ & 1.5744\\
+    4.0 & 1.4367 & $-0.0410$ & $-0.0410$ & 1.4367\\
+    \bottomrule
+  \end{tabular}
+  \caption{Optimal exit and entry triggers for the two-sided problem. The repository's optimal-stopping
+  solver reproduces these numbers exactly (see \texttt{make\_book\_figures.py}).}
+  \label{tab:triggers}
+\end{table}
+
+\section{Co-integrated Log Prices with Short-Term-Alpha}\label{sec:sta}
+
+A second route is to co-integrate the \emph{drift terms} of a basket of assets instead of the prices
+directly.
+
+\subsection{Model Setup}
+
+Let a basket of risky assets have price vector $Y = (Y^1_t,\dots,Y^n_t)_{0\le t\le T}$ evolving as
+\begin{equation}\label{eq:115}
+  \frac{dY^k_t}{Y^k_t} = \delta_k\,\alpha_t \dd t + \sum_{i=1}^n \sigma_{ki}\dd W^i_t,
+  \qquad
+  \alpha_t = a_0 + \sum_{i=1}^n a_i \log Y^i_t, \tag{11.5}
+\end{equation}
+where $W=(W^1,\dots,W^n)$ are independent Brownian motions. The instantaneous covariance of assets $i$
+and $j$ is $\Omega_{ij} = \sum_{k=1}^n \sigma_{ik}\sigma_{kj}$, making $\bm\sigma$ the Cholesky factor
+of $\bm\Omega = \bm\sigma\bm\sigma'$, which we take to be invertible. Here $\alpha_t$ plays the role of
+the co-integration factor (a `short-term-alpha' term). Differentiating it gives
+\begin{equation}\label{eq:116}
+  d\alpha_t = \kappa(\theta - \alpha_t)\dd t + \bm a'\bm\sigma \dd \bm W_t, \tag{11.6}
+\end{equation}
+with
+\begin{equation}
+  \kappa = -\sum_{k=1}^n a_k \delta_k = -\bm\delta'\bm a,
+  \qquad
+  \theta = \frac{\sum_{k=1}^n a_k \Omega_{kk}}{2\sum_{k=1}^n a_k\delta_k}
+    = \frac{1}{2}\frac{\Tr(\bm A\bm\Omega)}{\bm\delta'\bm a},
+\end{equation}
+where $\bm A = \mathrm{diag}(\bm a)$. Mean-reversion requires $\bm\delta'\bm a < 0$. In terms of
+$\bm Z_t = \log \bm Y_t$ the log-prices follow a (singular) vector-autoregression,
+$d\bm Z_t = (\bm c - \bm B\bm Z_t)\dd t + \bm\sigma\dd\bm W_t$.
+
+Trading is assumed frictionless and the objective is utility of terminal wealth. Writing $\bm\pi =
+(\pi^0_t,\dots,\pi^n_t)$ for the dollar amounts held in the riskless and risky assets, the share count
+in asset $k$ is $m^k_t = \pi^k_t / Y^k_t$ and wealth is
+$X^{\bm\pi}_t = \sum_{k=0}^n \pi^k_t = \sum_{k=0}^n m^k_t Y^k_t$, evolving as
+\begin{equation}
+  dX^{\bm\pi}_t = (\bm\pi_t'\bm\delta)\,\alpha_t \dd t + \bm\pi_t'\bm\sigma \dd\bm W_t.
+\end{equation}
+
+\subsection{The Agent's Optimisation Problem}
+
+Take an exponential-utility agent, $u(x) = -e^{-\gamma x}$, with value function
+\begin{equation*}
+  H(t,x,\bm y) = \supop_{\bm\pi\in\mathcal A}\E_{t,x,\bm y}\big[-\exp(-\gamma X^{\bm\pi}_T)\big].
+\end{equation*}
+Its Hamilton--Jacobi--Bellman equation is
+\begin{equation}
+  \partial_t H + \alpha\bm\delta'\bm D_{\bm y}H + \tfrac12 \bm D^{\bm\Omega}_{\bm{yy}}H
+    + \supop_{\bm\pi}\Big\{(\bm\pi'\bm\delta)\alpha\,\partial_x H
+    + \tfrac12(\bm\pi'\bm\Omega\bm\pi)\partial_{xx}H + \bm\pi'\bm\Omega\bm D_{\bm{xy}}H\Big\} = 0,
+\end{equation}
+with terminal data $H(T,x,\bm y) = -e^{-\gamma x}$. Completing the square in $\bm\pi$ yields the
+feedback-form optimal holdings,
+\begin{equation}\label{eq:117}
+  \bm\pi^* = -\frac{\bm\Omega^{-1}\bm\delta\,\alpha\,\partial_x H + \bm D_{\bm{xy}}H}{\partial_{xx}H}, \tag{11.7}
+\end{equation}
+and the nonlinear PDE
+\begin{equation}\label{eq:118}
+  \partial_t H + \alpha\bm\delta'\bm D_{\bm y}H + \tfrac12 \bm D^{\bm\Omega}_{\bm{yy}}H
+    - \frac{\mathcal{L}'H\,\bm\Omega^{-1}\mathcal{L}H}{2\,\partial_{xx}H} = 0. \tag{11.8}
+\end{equation}
+
+\subsection{Solving the DPE}
+
+Guided by the Merton problem, try the ansatz
+\begin{equation}
+  H(t,x,\bm y) = -\exp\Big\{-\gamma\big(x + h(t,\alpha)\big) + \sum_{i=1}^n a_i \log y^i\Big\},
+\end{equation}
+with $\alpha = a_0 + \sum_i a_i \log y^i$ and $h(T,\alpha)=0$. Inserting it, the nonlinear pieces cancel
+and $h$ is left obeying a plain linear PDE,
+\begin{equation}\label{eq:1110}
+  \partial_t h - \tfrac12\Tr(\bm A\bm\Omega)\,\partial_\alpha h + \tfrac12(\bm a'\bm\Omega\bm a)\,
+    \partial_{\alpha\alpha}h + \frac{\bm\delta'\bm\Omega\bm\delta}{2\gamma}\,\alpha^2 = 0, \tag{11.10}
+\end{equation}
+with $h(T,\alpha)=0$. The optimal holdings reduce to
+\begin{equation}\label{eq:1111}
+  \bm\pi^* = \frac1\gamma\big(\bm\Omega^{-1}\bm\delta\big)\alpha - \bm a\,\partial_\alpha h. \tag{11.11}
+\end{equation}
+The leading term reproduces the classical Merton allocation (with the stochastic drift
+$\bm\delta\alpha_t$), while the second term, along $\bm a$, is the adjustment introduced by
+co-integration.
+
+\subsection{A Probabilistic Interpretation}
+
+Under the risk-neutral measure $\Prob^*$ generated by the market price of risk
+$\bm\lambda_t = -\bm\sigma^{-1}\bm\delta\,\alpha_t$, the factor loses its level drift and becomes
+\begin{equation}\label{eq:1113}
+  d\alpha_t = -\tfrac12\Tr(\bm A\bm\Omega)\dd t + \bm a'\bm\sigma\dd\bm W^*_t. \tag{11.13}
+\end{equation}
+A Feynman--Kac representation then expresses $h$ as
+\begin{equation}\label{eq:1114}
+  h(t,\alpha) = \E^*_{t,\alpha}\!\left[\frac{\bm\delta'\bm\Omega\bm\delta}{2\gamma}\int_t^T \alpha_s^2\dd s\right], \tag{11.14}
+\end{equation}
+so the extra value from trading this co-integrated basket comes from the expected future integral of
+$\alpha^2$, growing with both volatility (via $\bm\Omega$) and the loading $\bm\delta$.
+
+\subsection{Explicit Construction of the Optimal Investment Strategy}
+
+Evaluating the expectation makes $h(t,\alpha)$ quadratic in $\alpha$, and the optimal holdings take the
+closed form
+\begin{equation}\label{eq:1116}
+  \bm\pi^* = \frac1\gamma\left\{(\bm\Omega^{-1}\bm\delta)\,\alpha
+    + (\bm\delta'\bm\Omega\bm\delta)\Big[\tfrac12\tau\,\alpha + \tfrac14\Tr(\bm A\bm\Omega)\tau^2\Big]\bm a\right\},
+  \qquad \tau = T-t. \tag{11.16}
+\end{equation}
+The first piece is the Merton portfolio (the assets drift at $\bm\delta\alpha$); the second, directed
+along $\bm a$, is the co-integration adjustment, and it shrinks as $\tau\to 0$---near the end of the
+horizon the trader stops chasing the short-term-alpha signal.
+
+\subsection{Numerical Experiments}
+
+As an illustration we take a three-asset example with
+\[
+  \bm\delta = (1,1,0)', \quad \bm a = (-1,0,1)', \quad a_0 = 0,
+\]
+\[
+  \bm\sigma = \begin{pmatrix} 0.2000 & 0 & 0\\ 0.0375 & 0.1452 & 0\\ 0.0250 & 0.0039 & 0.0967 \end{pmatrix}
+  \;\Rightarrow\;
+  \bm\Omega = \begin{pmatrix} 0.04 & 0.0075 & 0.005\\ 0.0075 & 0.0225 & 0.0015\\ 0.005 & 0.0015 & 0.01 \end{pmatrix},
+\]
+volatilities $\{2\%, 1.5\%, 1\%\}$, and starting prices $Y^1_0=11.10$, $Y^2_0=12.00$, $Y^3_0=11.00$.
+With this choice of $\bm a$, only the first and third assets enter the factor, while $\bm\delta$ lets
+the factor act on the drifts of the first two assets only.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fig_11_7.pdf}
+  \caption{A single simulated path: the co-integrated asset prices, the factor $\alpha_t$, the implied
+  optimal holdings $\bm\pi^*_t$, and the wealth process $X_t$.}
+  \label{fig:11_7}
+\end{figure}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.75\textwidth]{figures/fig_11_8.pdf}
+  \caption{Distribution of terminal P\&L for the optimal strategy across many simulated paths.}
+  \label{fig:11_8}
+\end{figure}
+
+Figure~\ref{fig:11_7} displays one realisation of the prices, factor, optimal holdings, and wealth,
+while Figure~\ref{fig:11_8} gives the histogram of terminal P\&L over many simulations.
+
+\section{Bibliography and Selected Readings}
+
+Elliott, Van Der Hoek \& Malcolm (2005); Tourin \& Yan (2013); Leung \& Li (2014); Leung \& Ludkovski
+(2011).
+
+\end{document}
